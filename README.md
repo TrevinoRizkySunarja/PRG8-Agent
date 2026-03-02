@@ -4,6 +4,16 @@ Smart Technologies: web apps bouwen met large language models
 
 <Br><br><br>
 
+## Brightspace
+
+⚠️ De lesinhoud en opdrachten vind je in Brightspace!
+
+## Github
+
+In deze repository vind je code snippets voor de oefeningen.
+
+<Br><br><br>
+
 ## Programma
 
 | Les | Onderwerp | Lesoefening | 
@@ -18,12 +28,5 @@ Smart Technologies: web apps bouwen met large language models
 | 8 | Chatbot afronden | Agent met tools en documenten. Agent live zetten. Images sturen.| 
 | 9 | AI workflow | Chat History Database, Structured Output, MCP, Lokale AI, Evaluatie en Safety
 
-<Br><br><br>
 
-## Brightspace
 
-⚠️ De lesinhoud en opdrachten vind je in Brightspace!
-
-## Github
-
-In deze repository vind je code snippets voor de oefeningen.
