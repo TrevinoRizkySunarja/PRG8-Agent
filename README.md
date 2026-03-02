@@ -6,11 +6,7 @@ Smart Technologies: web apps bouwen met large language models
 
 ## Brightspace
 
-⚠️ De lesinhoud en opdrachten vind je in Brightspace!
-
-## Github
-
-In deze repository vind je code snippets voor de oefeningen.
+⚠️ De lesinhoud en opdrachten vind je in Brightspace! In deze repository vind je code snippets voor de oefeningen.
 
 <Br><br><br>
 
