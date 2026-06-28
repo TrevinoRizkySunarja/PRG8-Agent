@@ -1,12 +1,3 @@
-node_modules/
-vendor/
 .env
-.env.local
-.DS_Store
-.idea/
-dist/
-build/
-.cache/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+data/chat-history.json
+node_modules/

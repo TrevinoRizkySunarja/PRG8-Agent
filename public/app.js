@@ -1,96 +1,111 @@
-// -----------------------------
-// 1. Unieke thread ID
-// -----------------------------
-let threadId = localStorage.getItem("threadId");
-if (!threadId) {
-  threadId = crypto.randomUUID();
-  localStorage.setItem("threadId", threadId);
-}
+const messagesEl = document.querySelector("#messages");
+const form = document.querySelector("#chatForm");
+const input = document.querySelector("#messageInput");
+const template = document.querySelector("#messageTemplate");
+const statusList = document.querySelector("#statusList");
+const saveDocButton = document.querySelector("#saveDocButton");
+const docTitle = document.querySelector("#docTitle");
+const docText = document.querySelector("#docText");
+const docMessage = document.querySelector("#docMessage");
 
-// -----------------------------
-// 2. UI elementen
-// -----------------------------
-const form = document.querySelector("form");
-const input = document.querySelector("input");
-const chat = document.querySelector("#chat");
+await loadStatus();
+await loadHistory();
 
-// -----------------------------
-// 3. Bericht toevoegen aan UI
-// -----------------------------
-function addMessage(role, text) {
-  const div = document.createElement("div");
-  div.className = `bubble ${role}`;
-  div.textContent = text;
-  chat.appendChild(div);
-
-  chat.scrollTop = chat.scrollHeight;
-}
-
-// -----------------------------
-// 4. History ophalen
-// -----------------------------
-async function loadHistory() {
-  try {
-    const res = await fetch(`/history/${threadId}`);
-    const history = await res.json();
-
-    history.forEach((msg) => {
-      addMessage(msg.role, msg.content);
-    });
-  } catch (err) {
-    console.error("History error:", err);
-  }
-}
-
-// -----------------------------
-// 5. Bericht versturen
-// -----------------------------
-async function sendMessage(message) {
-  try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, threadId })
-    });
-
-    const data = await res.json();
-
-    // AI antwoord
-    addMessage("assistant", data.message);
-
-    // Tools gebruikt?
-    if (data.usedTools?.length > 0) {
-      addMessage("system", `Tools used: ${data.usedTools.join(", ")}`);
-    }
-
-    // Afbeelding?
-    if (data.image) {
-      const img = document.createElement("img");
-      img.src = data.image;
-      img.className = "chat-image";
-      chat.appendChild(img);
-    }
-  } catch (err) {
-    console.error("Chat error:", err);
-    addMessage("system", "Er ging iets mis met de server.");
-  }
-}
-
-// -----------------------------
-// 6. Form submit handler
-// -----------------------------
-form.addEventListener("submit", (e) => {
-  e.preventDefault();
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
   const message = input.value.trim();
   if (!message) return;
 
   input.value = "";
+  addMessage({ role: "user", content: message });
+  addMessage({ role: "assistant", content: "Ik denk even mee...", pending: true });
 
-  addMessage("user", message);
-  sendMessage(message);
+  const response = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message })
+  });
+  const data = await response.json();
+  messagesEl.querySelector("[data-pending='true']")?.remove();
+  addMessage(data);
 });
 
-// -----------------------------
-// 7. Start: history laden
-// -----------------------------
-loadHistory();
+saveDocButton.addEventListener("click", async () => {
+  docMessage.textContent = "Opslaan...";
+  const response = await fetch("/api/documents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      title: docTitle.value,
+      text: docText.value
+    })
+  });
+  const data = await response.json();
+  docMessage.textContent = data.ok
+    ? `Opgeslagen als ${data.fileName}.`
+    : (data.error || "Opslaan mislukt.");
+  if (data.ok) {
+    docTitle.value = "";
+    docText.value = "";
+    await loadStatus();
+  }
+});
+
+async function loadStatus() {
+  const response = await fetch("/api/health");
+  const data = await response.json();
+  statusList.innerHTML = `
+    <div><dt>Model</dt><dd>${escapeHtml(data.model)}</dd></div>
+    <div><dt>Documentstukken</dt><dd>${data.documentsIndexed}</dd></div>
+  `;
+}
+
+async function loadHistory() {
+  const response = await fetch("/api/history");
+  const history = await response.json();
+  messagesEl.innerHTML = "";
+  if (!history.length) {
+    addMessage({
+      role: "assistant",
+      content: "Hoi, ik ben Agent P. Stel een vraag over de documenten, laat mij iets uitrekenen, of vraag welke bronnen ik gebruik."
+    });
+    return;
+  }
+  history.forEach(addMessage);
+}
+
+function addMessage(message) {
+  const node = template.content.firstElementChild.cloneNode(true);
+  node.classList.add(message.role || "assistant");
+  if (message.pending) node.dataset.pending = "true";
+
+  node.querySelector(".bubble").textContent = message.content || message.error || "";
+  const meta = node.querySelector(".meta");
+
+  for (const tool of message.toolsUsed || []) {
+    meta.append(createPill(`tool: ${tool}`));
+  }
+
+  for (const source of message.sources || []) {
+    meta.append(createPill(`bron: ${source.source} #${source.chunkIndex}`));
+  }
+
+  if (!meta.childElementCount) meta.remove();
+  messagesEl.append(node);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function createPill(text) {
+  const pill = document.createElement("span");
+  pill.className = "pill";
+  pill.textContent = text;
+  return pill;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
