@@ -33,6 +33,18 @@ Zonder Azure OpenAI keys werkt Agent P in offline demo-modus. Dan gebruikt hij d
 - Bewaart chatgeschiedenis in `data/chat-history.json`.
 - Toont in de frontend welke bronnen en tools gebruikt zijn.
 - Redeneert vriendelijk verder als het document geen direct antwoord bevat.
+- Routeert iedere vraag eerst naar precies een hoofdtool, zodat een weervraag geen documentresultaten toont.
+- Scheidt chatgeschiedenis en LangChain-geheugen per browsersessie.
+- Schakelt na een ongeldige Azure-configuratie snel over op de offline fallback.
+
+## Kwaliteitscontrole
+
+```powershell
+npm run check
+npm test
+```
+
+De korte pseudocode en bestandsindeling staan in [`docs/AGENT_FLOW.md`](docs/AGENT_FLOW.md).
 
 ## Screencast volgorde
 

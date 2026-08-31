@@ -6,7 +6,8 @@
     "scripts":  {
                     "dev":  "node --env-file=.env app/server.js",
                     "start":  "node app/server.js",
-                    "check":  "node --check app/server.js \u0026\u0026 node --check app/agent.js \u0026\u0026 node --check app/vectorStore.js \u0026\u0026 node --check app/tools.js \u0026\u0026 node --check app/openai.js",
+                    "check":  "node --check app/server.js \u0026\u0026 node --check app/agent.js \u0026\u0026 node --check app/vectorStore.js \u0026\u0026 node --check app/tools.js \u0026\u0026 node --check app/openai.js \u0026\u0026 node --check public/app.js",
+                    "test":  "node --test",
                     "agent":  "node --env-file=.env app/server.js"
                 },
     "engines":  {

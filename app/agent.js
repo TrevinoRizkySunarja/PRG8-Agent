@@ -6,79 +6,67 @@ import { chooseToolCalls } from "./tools.js";
 
 const SYSTEM_PROMPT = `Je bent Agent P, een vriendelijke Nederlandstalige studie-assistent.
 Je helpt studenten met programmeeropdrachten. Antwoord rustig, concreet en behulpzaam.
-Gebruik documentcontext wanneer die beschikbaar is. Als het antwoord niet uit de documenten komt,
-zeg dan kort dat je redeneert buiten de bron. Noem bronnen onderaan als ze gebruikt zijn.`;
+Gebruik document_search precies een keer voordat je een inhoudelijke vraag beantwoordt.
+Gebruik alleen relevante informatie uit het toolresultaat. Als de documenten geen antwoord geven,
+zeg dat dan eerlijk en verzin geen bron. Noem gebruikte bronnen kort onderaan.`;
 
 const memorySaver = new MemorySaver();
 let langChainAgent = null;
+let azureUnavailableReason = "";
 
-export async function answerWithAgent({ message, history, tools }) {
+export async function answerWithAgent({ message, tools, sessionId }) {
   const toolCalls = chooseToolCalls(message);
-  const toolResults = [];
 
-  for (const call of toolCalls) {
-    if (!tools[call.name]) continue;
-    const result = await tools[call.name](call.arguments);
-    toolResults.push(result);
+  if (!toolCalls.length) {
+    return {
+      answer: "Hoi! Ik ben Agent P. Waar kan ik je mee helpen?",
+      toolsUsed: [],
+      sources: []
+    };
   }
 
-  const documentResult = toolResults.find((result) => result.name === "document_search");
-  const sources = (documentResult?.results ?? [])
-    .filter((item) => item.score >= 0.08)
-    .slice(0, 3);
+  const [call] = toolCalls;
+  if (call.name !== "document_search") {
+    const result = await runTool(tools, call);
+    return {
+      answer: result.summary,
+      toolsUsed: [result.name],
+      sources: []
+    };
+  }
 
-  const context = sources
-    .map((source, index) => `[Bron ${index + 1}: ${source.source}, chunk ${source.chunkIndex}]\n${source.text}`)
-    .join("\n\n");
-
-  const toolSummary = toolResults
-    .filter((result) => result.name !== "document_search")
-    .map((result) => `${result.name}: ${result.summary}`)
-    .join("\n");
-
-  if (hasAzureConfig()) {
+  if (hasAzureConfig() && !azureUnavailableReason) {
     try {
       const agent = getLangChainAgent(tools);
       const result = await agent.invoke(
         {
-          messages: [
-            ...history.slice(-8).map(({ role, content }) => ({ role, content })),
-            {
-              role: "user",
-              content: [
-                `Vraag: ${message}`,
-                context ? `Al gevonden documentcontext:\n${context}` : "Er is nog geen relevante documentcontext gevonden.",
-                toolSummary ? `Al uitgevoerde toolresultaten:\n${toolSummary}` : "Nog geen extra toolresultaten.",
-                "Gebruik waar nodig je tools: document_search, calculator of weather.",
-                "Antwoord in het Nederlands als Agent P."
-              ].join("\n\n")
-            }
-          ]
+          messages: [{ role: "user", content: message }]
         },
         {
           configurable: {
-            thread_id: "agent-p-demo"
+            thread_id: sessionId
           }
         }
       );
 
       const aiAnswer = extractFinalContent(result);
+      const sources = extractSources(result);
       if (aiAnswer) {
         return {
           answer: aiAnswer,
-          toolsUsed: [
-            "LangChain createAgent actief met AzureChatOpenAI en MemorySaver.",
-            ...toolResults.map((result) => result.summary)
-          ],
+          toolsUsed: ["document_search"],
           sources
         };
       }
     } catch (error) {
+      if (isConfigurationError(error)) azureUnavailableReason = error.message;
       console.error("LangChain agent fout:", error.message);
     }
   }
 
-  return fallbackAnswer({ message, sources, toolResults });
+  const documentResult = await runTool(tools, call);
+  const sources = (documentResult.results ?? []).slice(0, 3);
+  return fallbackAnswer({ message, sources });
 }
 
 function getLangChainAgent(tools) {
@@ -90,12 +78,14 @@ function getLangChainAgent(tools) {
     azureOpenAIApiDeploymentName: process.env.AZURE_OPENAI_API_DEPLOYMENT_NAME,
     azureOpenAIApiVersion: process.env.AZURE_OPENAI_API_VERSION,
     azureOpenAIEndpoint: process.env.AZURE_OPENAI_ENDPOINT,
-    temperature: 0.3
+    temperature: 0.2,
+    maxRetries: 0,
+    timeout: 15000
   });
 
   langChainAgent = createAgent({
     model,
-    tools: createLangChainTools(tools),
+    tools: [createDocumentSearchTool(tools)],
     systemPrompt: SYSTEM_PROMPT,
     checkpointer: memorySaver
   });
@@ -103,53 +93,25 @@ function getLangChainAgent(tools) {
   return langChainAgent;
 }
 
-function createLangChainTools(tools) {
-  return [
-    tool(
-      async ({ query }) => {
-        const result = await tools.document_search({ query });
-        return JSON.stringify(result.results.map(({ source, chunkIndex, text, score }) => ({
-          source,
-          chunkIndex,
-          score,
-          text
-        })));
-      },
-      {
-        name: "document_search",
-        description: "Zoekt relevante informatie in de documenten van Agent P.",
-        schema: z.object({
-          query: z.string().describe("De vraag of zoekterm van de gebruiker.")
-        })
-      }
-    ),
-    tool(
-      async ({ expression }) => {
-        const result = await tools.calculator({ expression });
-        return result.summary;
-      },
-      {
-        name: "calculator",
-        description: "Rekent een veilige simpele berekening uit.",
-        schema: z.object({
-          expression: z.string().describe("Een simpele rekensom, bijvoorbeeld 18 * 7 + 4.")
-        })
-      }
-    ),
-    tool(
-      async ({ city }) => {
-        const result = await tools.weather({ city });
-        return result.summary;
-      },
-      {
-        name: "weather",
-        description: "Haalt gratis actueel weer op voor een stad via Open-Meteo, zonder API-key.",
-        schema: z.object({
-          city: z.string().describe("De stad waarvoor het weer moet worden opgehaald.")
-        })
-      }
-    )
-  ];
+function createDocumentSearchTool(tools) {
+  return tool(
+    async ({ query }) => {
+      const result = await tools.document_search({ query });
+      return JSON.stringify(result.results.map(({ source, chunkIndex, text, score }) => ({
+        source,
+        chunkIndex,
+        score,
+        text
+      })));
+    },
+    {
+      name: "document_search",
+      description: "Zoekt relevante informatie in de documenten van Agent P.",
+      schema: z.object({
+        query: z.string().describe("De volledige vraag van de gebruiker.")
+      })
+    }
+  );
 }
 
 function hasAzureConfig() {
@@ -163,8 +125,24 @@ function hasAzureConfig() {
 
 function extractFinalContent(result) {
   const messages = result?.messages ?? [];
-  const lastMessage = [...messages].reverse().find((item) => item?.content);
+  const lastMessage = [...messages].reverse().find((item) => messageType(item) === "ai" && item?.content);
   return normalizeContent(lastMessage?.content ?? result?.output ?? "");
+}
+
+function extractSources(result) {
+  const messages = result?.messages ?? [];
+  const lastUserIndex = messages.findLastIndex((item) => messageType(item) === "human");
+  const toolMessage = messages.slice(lastUserIndex + 1)
+    .find((item) => messageType(item) === "tool" && item.name === "document_search");
+  try {
+    return JSON.parse(normalizeContent(toolMessage?.content)).slice(0, 3);
+  } catch {
+    return [];
+  }
+}
+
+function messageType(message) {
+  return message?._getType?.() || message?.type || message?.role || "";
 }
 
 function normalizeContent(content) {
@@ -181,29 +159,51 @@ function normalizeContent(content) {
   return String(content || "").trim();
 }
 
-function fallbackAnswer({ message, sources, toolResults }) {
-  const usefulToolResults = toolResults.filter((result) => result.name !== "document_search");
+function fallbackAnswer({ message, sources }) {
   const sourceText = sources.map((source) => source.text.replace(/^#+\s*/gm, "")).join("\n\n");
-  const toolText = usefulToolResults.map((result) => result.summary).join(" ");
 
-  if (sourceText || toolText) {
+  if (sourceText) {
     return {
       answer: [
-        "Ik heb dit gevonden:",
-        sourceText ? summarize(sourceText) : "",
-        toolText ? `Toolresultaat: ${toolText}` : "",
-        sources.length ? "Bronnen: " + sources.map((source) => `${source.source} chunk ${source.chunkIndex}`).join(", ") : ""
+        "Ik heb dit in de documenten gevonden:",
+        summarize(sourceText),
+        "Bronnen: " + sources.map((source) => `${source.source} chunk ${source.chunkIndex}`).join(", ")
       ].filter(Boolean).join("\n\n"),
-      toolsUsed: toolResults.map((result) => result.summary),
+      toolsUsed: ["document_search"],
       sources
     };
   }
 
   return {
-    answer: `Ik kan dit niet direct uit de documenten halen. Mijn redenering: je vraag gaat over "${message}", dus ik zou eerst de opdrachtcriteria erbij pakken, bepalen welke tool of documentbron nodig is, en daarna pas een definitief antwoord geven.`,
-    toolsUsed: toolResults.map((result) => result.summary),
+    answer: `Ik kan geen relevant antwoord op "${message}" in de ingeladen documenten vinden. Voeg een passende bron toe of stel de vraag specifieker.`,
+    toolsUsed: ["document_search"],
     sources: []
   };
+}
+
+async function runTool(tools, call) {
+  const selectedTool = tools[call.name];
+  if (!selectedTool) throw new Error(`Onbekende tool: ${call.name}`);
+  try {
+    return await selectedTool(call.arguments);
+  } catch (error) {
+    return {
+      name: call.name,
+      summary: `De ${call.name}-tool is tijdelijk niet beschikbaar: ${error.message}`,
+      result: null,
+      results: []
+    };
+  }
+}
+
+function isConfigurationError(error) {
+  return /401|403|authentication|subscription key|api key|endpoint/i.test(error?.message || "");
+}
+
+export function getAgentStatus() {
+  if (!hasAzureConfig()) return "offline fallback";
+  if (azureUnavailableReason) return "Azure geconfigureerd, maar niet beschikbaar";
+  return "AzureChatOpenAI via LangChain";
 }
 
 function summarize(text) {

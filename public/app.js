@@ -7,6 +7,8 @@ const saveDocButton = document.querySelector("#saveDocButton");
 const docTitle = document.querySelector("#docTitle");
 const docText = document.querySelector("#docText");
 const docMessage = document.querySelector("#docMessage");
+const newChatButton = document.querySelector("#newChatButton");
+let sessionId = localStorage.getItem("agentPSessionId") || createSessionId();
 
 await loadStatus();
 await loadHistory();
@@ -17,17 +19,33 @@ form.addEventListener("submit", async (event) => {
   if (!message) return;
 
   input.value = "";
+  setComposerBusy(true);
   addMessage({ role: "user", content: message });
   addMessage({ role: "assistant", content: "Ik denk even mee...", pending: true });
 
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message })
-  });
-  const data = await response.json();
-  messagesEl.querySelector("[data-pending='true']")?.remove();
-  addMessage(data);
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, sessionId })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Antwoord ophalen mislukt.");
+    addMessage(data);
+  } catch (error) {
+    addMessage({ role: "assistant", content: error.message });
+  } finally {
+    messagesEl.querySelector("[data-pending='true']")?.remove();
+    setComposerBusy(false);
+    input.focus();
+  }
+});
+
+newChatButton.addEventListener("click", () => {
+  sessionId = createSessionId();
+  messagesEl.innerHTML = "";
+  addWelcomeMessage();
+  input.focus();
 });
 
 saveDocButton.addEventListener("click", async () => {
@@ -61,17 +79,32 @@ async function loadStatus() {
 }
 
 async function loadHistory() {
-  const response = await fetch("/api/history");
+  const response = await fetch(`/api/history?sessionId=${encodeURIComponent(sessionId)}`);
   const history = await response.json();
   messagesEl.innerHTML = "";
   if (!history.length) {
-    addMessage({
-      role: "assistant",
-      content: "Hoi, ik ben Agent P. Stel een vraag over de documenten, laat mij iets uitrekenen, of vraag welke bronnen ik gebruik."
-    });
+    addWelcomeMessage();
     return;
   }
   history.forEach(addMessage);
+}
+
+function addWelcomeMessage() {
+  addMessage({
+    role: "assistant",
+    content: "Hoi, ik ben Agent P. Stel een vraag over de documenten, laat mij iets uitrekenen of vraag naar het weer."
+  });
+}
+
+function createSessionId() {
+  const id = crypto.randomUUID();
+  localStorage.setItem("agentPSessionId", id);
+  return id;
+}
+
+function setComposerBusy(isBusy) {
+  input.disabled = isBusy;
+  form.querySelector("button").disabled = isBusy;
 }
 
 function addMessage(message) {

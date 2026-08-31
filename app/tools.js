@@ -10,8 +10,10 @@ export function createTools(vectorStore) {
     },
 
     async calculator({ expression }) {
-      const safeExpression = expression.replace(/[^0-9+\-*/().,%\s]/g, "");
-      if (!safeExpression.trim()) {
+      const safeExpression = String(expression || "")
+        .replace(/[^0-9+\-*/().,%\s]/g, "")
+        .trim();
+      if (!safeExpression || safeExpression.length > 100) {
         return {
           name: "calculator",
           summary: "Geen veilige berekening gevonden.",
@@ -21,6 +23,7 @@ export function createTools(vectorStore) {
 
       try {
         const result = Function(`"use strict"; return (${safeExpression.replaceAll("%", "/100")});`)();
+        if (!Number.isFinite(result)) throw new Error("Ongeldig resultaat");
         return {
           name: "calculator",
           summary: `${safeExpression} = ${result}`,
@@ -36,17 +39,26 @@ export function createTools(vectorStore) {
     },
 
     async weather({ city }) {
+      const cleanCity = String(city || "").trim().slice(0, 80);
+      if (!cleanCity) {
+        return {
+          name: "weather",
+          summary: "Voor welke plaats wil je het weer weten?",
+          result: null
+        };
+      }
+
       const geoEndpoint = new URL("https://geocoding-api.open-meteo.com/v1/search");
-      geoEndpoint.searchParams.set("name", city);
+      geoEndpoint.searchParams.set("name", cleanCity);
       geoEndpoint.searchParams.set("count", "1");
       geoEndpoint.searchParams.set("language", "nl");
       geoEndpoint.searchParams.set("format", "json");
 
-      const geoResponse = await fetch(geoEndpoint);
+      const geoResponse = await fetchWithTimeout(geoEndpoint);
       if (!geoResponse.ok) {
         return {
           name: "weather",
-          summary: `Ik kon de locatie ${city} niet opzoeken via Open-Meteo (${geoResponse.status}).`,
+          summary: `Ik kon de locatie ${cleanCity} niet opzoeken via Open-Meteo (${geoResponse.status}).`,
           result: null
         };
       }
@@ -56,7 +68,7 @@ export function createTools(vectorStore) {
       if (!location) {
         return {
           name: "weather",
-          summary: `Ik kon geen weerlocatie vinden voor ${city}.`,
+          summary: `Ik kon geen weerlocatie vinden voor ${cleanCity}.`,
           result: null
         };
       }
@@ -67,7 +79,7 @@ export function createTools(vectorStore) {
       endpoint.searchParams.set("current", "temperature_2m,weather_code,wind_speed_10m");
       endpoint.searchParams.set("timezone", "auto");
 
-      const response = await fetch(endpoint);
+      const response = await fetchWithTimeout(endpoint);
       if (!response.ok) {
         return {
           name: "weather",
@@ -95,25 +107,28 @@ export function createTools(vectorStore) {
 }
 
 export function chooseToolCalls(message) {
-  const calls = [{ name: "document_search", arguments: { query: message } }];
-  const lower = message.toLowerCase();
+  const text = String(message || "").trim();
+  const lower = text.toLowerCase();
+
+  if (isWeatherQuestion(lower)) {
+    return [{
+      name: "weather",
+      arguments: { city: extractCity(text) }
+    }];
+  }
 
   if (/(reken|bereken|hoeveel is|[0-9]\s*[+\-*/]\s*[0-9])/.test(lower)) {
-    calls.push({
+    return [{
       name: "calculator",
-      arguments: { expression: extractExpression(message) }
-    });
+      arguments: { expression: extractExpression(text) }
+    }];
   }
 
-  const weatherMatch = lower.match(/weer(?:\s+in)?\s+([\p{L}\s-]{2,40})/u);
-  if (weatherMatch) {
-    calls.push({
-      name: "weather",
-      arguments: { city: cleanupCity(weatherMatch[1]) || "Rotterdam" }
-    });
+  if (/^(hoi|hallo|hey|goedemorgen|goedemiddag|goedenavond)[!.?\s]*$/i.test(text)) {
+    return [];
   }
 
-  return calls;
+  return [{ name: "document_search", arguments: { query: text } }];
 }
 
 function extractExpression(message) {
@@ -121,11 +136,36 @@ function extractExpression(message) {
   return match ? match[0] : message;
 }
 
+function isWeatherQuestion(message) {
+  return /\b(?:wat|hoe)\s+(?:is|wordt)\s+het\s+weer\b/.test(message) ||
+    /\bweer\s+(?:vandaag|morgen|nu|in|voor|te)\b/.test(message) ||
+    /\btemperatuur\s+(?:in|voor|te)\b/.test(message) ||
+    /\b(?:regent|sneeuwt)\s+(?:het\s+)?(?:in|te)\b/.test(message);
+}
+
+function extractCity(message) {
+  const patterns = [
+    /\b(?:weer|temperatuur)(?:\s+(?:vandaag|morgen|nu))?\s+(?:in|voor|te)\s+([^?.,;]+)/iu,
+    /\b(?:regent|sneeuwt)\s+(?:het\s+)?(?:in|te)\s+([^?.,;]+)/iu,
+    /\bweer\s+([\p{L}][\p{L}' -]{1,40})/iu
+  ];
+  const match = patterns.map((pattern) => message.match(pattern)).find(Boolean);
+  return cleanupCity(match?.[1] || "");
+}
+
 function cleanupCity(value) {
   return value
-    .replace(/[?.!,].*$/, "")
+    .split(/\s+(?:en|maar|plus|ook)\b/i)[0]
     .replace(/\b(vandaag|morgen|nu|alsjeblieft|aub)\b/gi, "")
     .trim();
+}
+
+async function fetchWithTimeout(url) {
+  try {
+    return await fetch(url, { signal: AbortSignal.timeout(8000) });
+  } catch (error) {
+    throw new Error(`Open-Meteo is niet bereikbaar: ${error.message}`);
+  }
 }
 
 function describeWeatherCode(code) {

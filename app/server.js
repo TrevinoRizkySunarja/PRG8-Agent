@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { answerWithAgent } from "./agent.js";
+import { answerWithAgent, getAgentStatus } from "./agent.js";
 import { createTools } from "./tools.js";
 import { VectorStore } from "./vectorStore.js";
 
@@ -32,12 +32,13 @@ const server = http.createServer(async (request, response) => {
         ok: true,
         documentsIndexed: vectorStore.size,
         documentsDir,
-        model: process.env.AZURE_OPENAI_API_KEY ? "AzureChatOpenAI via LangChain" : "offline fallback"
+        model: getAgentStatus()
       });
     }
 
     if (request.method === "GET" && url.pathname === "/api/history") {
-      return sendJson(response, chatHistory.slice(-30));
+      const sessionId = normalizeSessionId(url.searchParams.get("sessionId"));
+      return sendJson(response, chatHistory.filter((item) => item.sessionId === sessionId).slice(-30));
     }
 
     if (request.method === "GET" && url.pathname === "/api/documents") {
@@ -61,19 +62,22 @@ const server = http.createServer(async (request, response) => {
       const body = await readBody(request);
       const message = String(body.message || "").trim();
       if (!message) return sendJson(response, { error: "Bericht ontbreekt." }, 400);
+      if (message.length > 2000) return sendJson(response, { error: "Bericht is te lang." }, 400);
+      const sessionId = normalizeSessionId(body.sessionId);
 
-      chatHistory.push({ role: "user", content: message, at: new Date().toISOString() });
       const result = await answerWithAgent({
         message,
-        history: chatHistory,
-        tools
+        tools,
+        sessionId
       });
+      chatHistory.push({ role: "user", content: message, at: new Date().toISOString(), sessionId });
       const assistantMessage = {
         role: "assistant",
         content: result.answer,
         at: new Date().toISOString(),
         toolsUsed: result.toolsUsed,
-        sources: result.sources
+        sources: result.sources,
+        sessionId
       };
       chatHistory.push(assistantMessage);
       await fs.writeFile(historyPath, JSON.stringify(chatHistory.slice(-80), null, 2), "utf8");
@@ -95,7 +99,8 @@ server.listen(port, () => {
 async function serveStatic(response, pathname) {
   const safePath = pathname === "/" ? "/index.html" : pathname;
   const filePath = path.normalize(path.join(publicDir, safePath));
-  if (!filePath.startsWith(publicDir)) return sendText(response, "Forbidden", 403);
+  const relativePath = path.relative(publicDir, filePath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) return sendText(response, "Forbidden", 403);
 
   try {
     const data = await fs.readFile(filePath);
@@ -120,7 +125,12 @@ async function loadEnv(filePath) {
 
 async function readBody(request) {
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 1_000_000) throw new Error("Request body is te groot.");
+    chunks.push(chunk);
+  }
   const text = Buffer.concat(chunks).toString("utf8");
   return text ? JSON.parse(text) : {};
 }
@@ -156,4 +166,9 @@ function sanitizeFileName(value) {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60) || "document";
+}
+
+function normalizeSessionId(value) {
+  const sessionId = String(value || "default").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80);
+  return sessionId || "default";
 }

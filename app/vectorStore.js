@@ -35,28 +35,39 @@ export class VectorStore {
   addDocument({ id, title, source, text }) {
     const chunks = chunkText(text);
     chunks.forEach((chunk, index) => {
+      const terms = tokenize(chunk);
       this.documents.push({
         id: `${id}#${index + 1}`,
         title,
         source,
         chunkIndex: index + 1,
         text: chunk,
-        vector: embed(chunk)
+        terms,
+        vector: embedTerms(terms)
       });
     });
   }
 
   search(query, limit = 4) {
-    const queryVector = embed(query);
+    const queryTerms = [...new Set(tokenize(query))];
+    if (!queryTerms.length) return [];
+    const queryVector = embedTerms(queryTerms);
+
     return this.documents
-      .map((doc) => ({
-        ...doc,
-        score: cosineSimilarity(queryVector, doc.vector)
-      }))
-      .filter((doc) => doc.score > 0)
+      .map((doc) => {
+        const documentTerms = new Set(doc.terms);
+        const matchingTerms = queryTerms.filter((term) => documentTerms.has(term));
+        const coverage = matchingTerms.length / queryTerms.length;
+        return {
+          ...doc,
+          score: (coverage * 0.7) + (cosineSimilarity(queryVector, doc.vector) * 0.3),
+          matchingTerms
+        };
+      })
+      .filter((doc) => doc.matchingTerms.length > 0 && doc.score >= 0.22)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
-      .map(({ vector, ...doc }) => doc);
+      .map(({ vector, terms, matchingTerms, ...doc }) => doc);
   }
 
   get size() {
@@ -91,9 +102,9 @@ function chunkText(text, maxWords = 130, overlap = 25) {
   return chunks;
 }
 
-function embed(text) {
+function embedTerms(terms) {
   const vector = new Array(VECTOR_SIZE).fill(0);
-  for (const token of tokenize(text)) {
+  for (const token of terms) {
     const index = hashToken(token) % VECTOR_SIZE;
     vector[index] += 1;
   }
