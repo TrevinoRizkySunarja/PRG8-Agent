@@ -2,6 +2,10 @@
 
 Node.js AI agent project built with Express, LangChain, LangGraph memory and Azure OpenAI. The app exposes a small web server with a chat endpoint, keeps message history per thread and demonstrates tool calling through custom weather and time tools.
 
+## Demo Status
+
+This project is designed to run locally because it depends on private API credentials for Azure OpenAI and optional Replicate image generation. For portfolio use, a short screen recording is recommended instead of exposing a public backend with API costs.
+
 ## Features
 
 - Express server with static frontend support from `public/`
